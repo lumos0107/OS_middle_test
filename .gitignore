@@ -1,0 +1,5 @@
+# 비밀번호·salt (절대 올리지 않음)
+.secret.json
+# 점검용 평문 데이터·테스트 결과
+_local/
+__pycache__/
