@@ -1,6 +1,6 @@
 """교재 연습문제 md 6개 → 암호화한 문제 데이터(data.enc.js).
 
-실행: python tools/build.py              (기본 원본: ../운영체제 시험 도움/교재_연습문제)
+실행: python tools/build.py              (기본 원본: 중간고사대비/운영체제/시험 도움/교재_연습문제)
       python tools/build.py --plain _local/data.json   (점검용 평문 JSON도 함께, _local/은 깃 제외)
 비밀번호와 salt는 .secret.json(깃 제외)에 둔다. 처음 한 번은 OSQ_PASSWORD 환경 변수로 만든다.
 salt를 고정해 두므로 데이터를 다시 만들어도 기기에 기억된 열쇠가 그대로 통한다.
@@ -25,7 +25,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_SRC = REPO.parent / "운영체제 시험 도움" / "교재_연습문제"
+# 원본 md 위치: 저장소가 중간고사대비/ 바로 아래에 있든 중간고사대비/운영체제/ 안에 있든 찾는다
+_SRC_CANDIDATES = [REPO.parent / "운영체제" / "시험 도움" / "교재_연습문제",
+                   REPO.parent / "시험 도움" / "교재_연습문제"]
+DEFAULT_SRC = next((p for p in _SRC_CANDIDATES if p.is_dir()), _SRC_CANDIDATES[0])
 SECRET = REPO / ".secret.json"
 OUT = REPO / "data.enc.js"
 ITERATIONS = 400_000
