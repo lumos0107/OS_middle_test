@@ -3,15 +3,15 @@
   color-scheme: light;
   --bg: #ffffff;
   --surface: #ffffff;
-  --text: #1b1f27;
-  --muted: #5b6372;
-  --primary: #2c5bc4;
+  --text: #1d2433;
+  --muted: #667085;
+  --primary: #3478f6;
   --on-primary: #ffffff;
-  --danger: #c63b32;
+  --danger: #e5484d;
   --line: rgba(27, 31, 39, 0.14);
   --soft: rgba(27, 31, 39, 0.045);
-  --primary-tint: rgba(44, 91, 196, 0.10);
-  --danger-tint: rgba(198, 59, 50, 0.10);
+  --primary-tint: rgba(52, 120, 246, 0.10);
+  --danger-tint: rgba(229, 72, 77, 0.10);
   --font: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
