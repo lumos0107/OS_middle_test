@@ -31,6 +31,7 @@ _SRC_CANDIDATES = [REPO.parent / "운영체제" / "시험 도움" / "교재_연�
 DEFAULT_SRC = next((p for p in _SRC_CANDIDATES if p.is_dir()), _SRC_CANDIDATES[0])
 SECRET = REPO / ".secret.json"
 OUT = REPO / "data.enc.js"
+SITE = "https://lumos0107.github.io/OS_middle_test/"
 ITERATIONS = 400_000
 EXPECTED = {1: 45, 2: 49, 3: 33, 4: 37, 5: 51, 6: 35}   # 장별 문제 수 (사진 점검 때 센 값)
 
@@ -436,8 +437,18 @@ def load_secret():
     return pw, salt
 
 
+def derive_key(password, salt):
+    return PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=ITERATIONS).derive(password.encode())
+
+
+def open_link(base=SITE):
+    """비밀번호 없이 여는 링크: 주소 뒤 #k=에 열쇠를 붙인다(# 뒤는 서버로 가지 않는다)."""
+    password, salt = load_secret()
+    return base + "#k=" + base64.urlsafe_b64encode(derive_key(password, salt)).decode().rstrip("=")
+
+
 def encrypt(data, password, salt):
-    key = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=ITERATIONS).derive(password.encode())
+    key = derive_key(password, salt)
     plain = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     # 내용이 같으면 같은 파일이 나오도록 IV를 내용에서 만든다(내용이 다르면 IV도 달라진다)
     iv = hmac.new(key, plain, hashlib.sha256).digest()[:12]
@@ -468,7 +479,11 @@ def main():
     ap.add_argument("src", nargs="?", default=str(DEFAULT_SRC))
     ap.add_argument("--plain", help="점검용 평문 JSON 경로(깃 제외 폴더에)")
     ap.add_argument("--stamp-only", action="store_true", help="데이터는 그대로 두고 index.html 버전 표시만 갱신")
+    ap.add_argument("--link", action="store_true", help="비밀번호 없이 여는 링크(열쇠 포함)를 출력")
     args = ap.parse_args()
+    if args.link:
+        print(open_link())
+        return
     if args.stamp_only:
         stamp_index()
         return

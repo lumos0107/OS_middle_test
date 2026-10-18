@@ -529,7 +529,7 @@
 
   // ── 설정 ──────────────────────────────────────────────────
   function renderSettings() {
-    const theme = store.get(K.theme, 'auto');
+    const theme = store.get(K.theme, 'light');
     app.innerHTML = `
       ${topbar('#/', '설정')}
       <main class="wrap stack">
@@ -624,10 +624,10 @@
   // ── 화면 색 ───────────────────────────────────────────────
   const metaColors = Array.from(document.querySelectorAll('meta[name="theme-color"]')).map(m => [m, m.content]);
   function applyTheme() {
-    const t = store.get(K.theme, 'auto');
+    const t = store.get(K.theme, 'light');   // 기본은 흰 화면, 설정에서 '기기 설정 따름'·'어둡게'로 바꿀 수 있음
     const root = document.documentElement;
     if (t === 'light' || t === 'dark') root.setAttribute('data-theme', t); else root.removeAttribute('data-theme');
-    metaColors.forEach(([m, orig]) => { m.content = t === 'light' ? '#f4f5f7' : t === 'dark' ? '#121418' : orig; });
+    metaColors.forEach(([m, orig]) => { m.content = t === 'light' ? '#ffffff' : t === 'dark' ? '#121418' : orig; });
   }
 
   // ── 잠금 화면과 시작 ──────────────────────────────────────
@@ -694,7 +694,17 @@
     applyTheme();
     if (!ENC) { app.innerHTML = '<p class="wrap" style="padding:40px 16px">문제 데이터를 불러오지 못했습니다. 새로고침해 보세요.</p>'; return; }
     if (!(window.crypto && crypto.subtle)) { renderLock('이 브라우저에서는 열 수 없습니다. https 주소로 열어 주세요.'); return; }
-    const saved = store.get(K.key, null);
+    // 열쇠가 들어 있는 링크(#k=…)로 열면 비밀번호 없이 열고 이 기기에 기억한다
+    const link = location.hash.match(/^#k=([A-Za-z0-9_-]+)/);
+    if (link) {
+      history.replaceState(null, '', location.pathname + location.search + '#/');
+      try {
+        const raw = b64(link[1].replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - link[1].length % 4) % 4));
+        DATA = await openData(raw);
+        store.set(K.key, toB64(raw));
+      } catch (e) { /* 열쇠가 맞지 않는 링크면 아래 잠금 화면으로 */ }
+    }
+    const saved = !DATA && store.get(K.key, null);
     if (saved) {
       try { DATA = await openData(b64(saved)); } catch (e) { store.del(K.key); }
     }

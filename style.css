@@ -1,15 +1,15 @@
 /* 색은 다섯 가지(배경·본문·보조·대표·틀림)와 그 투명도만 쓴다. 글꼴은 Pretendard 하나(코드만 고정 폭). */
 :root {
   color-scheme: light;
-  --bg: #f4f5f7;
+  --bg: #ffffff;
   --surface: #ffffff;
   --text: #1b1f27;
   --muted: #5b6372;
   --primary: #2c5bc4;
   --on-primary: #ffffff;
   --danger: #c63b32;
-  --line: rgba(27, 31, 39, 0.12);
-  --soft: rgba(27, 31, 39, 0.05);
+  --line: rgba(27, 31, 39, 0.14);
+  --soft: rgba(27, 31, 39, 0.045);
   --primary-tint: rgba(44, 91, 196, 0.10);
   --danger-tint: rgba(198, 59, 50, 0.10);
   --font: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;

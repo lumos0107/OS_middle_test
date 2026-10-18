@@ -17,6 +17,9 @@ from playwright.sync_api import sync_playwright
 REPO = Path(__file__).resolve().parents[1]
 SHOTS = REPO / "_local" / "shots"
 PASSWORD = json.loads((REPO / ".secret.json").read_text(encoding="utf-8"))["password"]
+sys.path.insert(0, str(REPO / "tools"))
+from build import open_link  # noqa: E402
+LINK = lambda base: open_link(base)
 DEVICES = {
     "phone": dict(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True),
     "laptop": dict(viewport={"width": 1280, "height": 800}),
@@ -200,6 +203,18 @@ def run(p, browser_name, device, base):
     shot("1b-chapter")
 
     check(not errors, f"콘솔 오류 {errors[:3]}")
+
+    # 열쇠 링크로 열기: 비밀번호 화면 없이 첫 화면, 주소에서 열쇠는 지워짐, 기본은 흰 화면
+    ctx2 = browser.new_context(**DEVICES[device], color_scheme="dark")
+    p2 = ctx2.new_page()
+    p2.goto(LINK(base))
+    p2.wait_for_selector(".chapters")
+    check("#k=" not in p2.url, f"열쇠가 주소에 남음 {p2.url}")
+    bg = p2.evaluate("getComputedStyle(document.body).backgroundColor")
+    check(bg == "rgb(255, 255, 255)", f"기본 배경이 흰색이 아님 {bg}")
+    p2.reload()
+    p2.wait_for_selector(".chapters")
+    ctx2.close()
     browser.close()
 
 
