@@ -8,12 +8,15 @@
   const app = document.getElementById('app');
   const CIRC = ['', '①', '②', '③', '④'];
   const TYPE_NAME = { mc: '객관식', calc: '계산', essay: '서술형' };
-  const K = { key: 'osq:key', rec: 'osq:rec', last: 'osq:last', session: 'osq:session', theme: 'osq:theme', mix: 'osq:mix' };
+  const K = { key: 'osq:key', rec: 'osq:rec', last: 'osq:last', session: 'osq:session', theme: 'osq:theme', mix: 'osq:mix',
+    sync: 'osq:sync', syncInfo: 'osq:syncinfo' };
+  const SYNC_REPO = 'lumos0107/OS_middle_test-records', SYNC_PATH = 'records.json';
 
   let DATA = null;   // 복호화한 문제 데이터
   let CH = {};       // 장 번호 → 장
   let ORDER = [];    // 전체 문제 id (1장 01 → 6장 35)
-  let REC = null;    // 풀이 기록 { res, star, draft, check }
+  let REC = null;    // 풀이 기록 (아래 '기록' 참고)
+  let RAWKEY = null; // 문제 데이터를 연 열쇠 (다른 기기 연결 링크용)
 
   // ── 작은 도구 ─────────────────────────────────────────────
   const $ = (sel, root = app) => root.querySelector(sel);
@@ -65,11 +68,23 @@
   }
 
   // ── 기록 ──────────────────────────────────────────────────
+  // res[id] = { r: 'o'|'x', pick, vals, ever, n, t }   star·draft·check는 값, starT·draftT·checkT는 바뀐 시각
+  // resetAt = '모든 기록 지우기'를 누른 시각 (그 전 기록은 다른 기기에서 와도 버린다)
+  const emptyRec = () => ({ res: {}, star: {}, starT: {}, draft: {}, draftT: {}, check: {}, checkT: {}, resetAt: 0 });
   function loadRec() {
     const r = store.get(K.rec, null);
-    REC = Object.assign({ res: {}, star: {}, draft: {}, check: {} }, r && typeof r === 'object' ? r : {});
+    REC = Object.assign(emptyRec(), r && typeof r === 'object' ? r : {});
   }
-  const saveRec = () => store.set(K.rec, REC);
+  const saveRecLocal = () => store.set(K.rec, REC);
+  function saveRec() {
+    saveRecLocal();
+    schedulePush();
+  }
+  function setMark(key, id, value) {   // star·draft·check 바꾸기
+    if (value === undefined) delete REC[key][id]; else REC[key][id] = value;
+    REC[key + 'T'][id] = Date.now();
+    saveRec();
+  }
   const P = id => DATA.problems[id];
   const state = id => (REC.res[id] && REC.res[id].r) || '';
   const count = (ids, st) => ids.filter(id => state(id) === st).length;
@@ -80,10 +95,131 @@
   }
   function clearResult(id) {
     const prev = REC.res[id];
-    if (prev) REC.res[id] = { ever: !!prev.ever, n: prev.n || 0 };
-    delete REC.check[id];
-    saveRec();
+    if (prev) REC.res[id] = { ever: !!prev.ever, n: prev.n || 0, t: Date.now() };
+    setMark('check', id, undefined);
   }
+
+  // 두 기록 합치기: 문제마다 더 나중에 바뀐 쪽을 쓰고, '틀린 적 있음'은 양쪽을 합친다
+  function mergeRec(a, b) {
+    const out = emptyRec();
+    const R = out.resetAt = Math.max(a.resetAt || 0, b.resetAt || 0);
+    const ok = id => !!(DATA && DATA.problems[id]);
+    const A = a.res || {}, B = b.res || {};
+    new Set([...Object.keys(A), ...Object.keys(B)]).forEach(id => {
+      const x = A[id], y = B[id];
+      const tx = x ? x.t || 0 : -1, ty = y ? y.t || 0 : -1;
+      const [win, lose] = tx >= ty ? [x, y] : [y, x];
+      if (!ok(id) || !win || (win.t || 0) < R) return;
+      const e = Object.assign({}, win);
+      if (lose && (lose.t || 0) >= R && lose.ever) e.ever = true;
+      out.res[id] = e;
+    });
+    ['star', 'draft', 'check'].forEach(key => {
+      const tk = key + 'T', VA = a[key] || {}, VB = b[key] || {}, TA = a[tk] || {}, TB = b[tk] || {};
+      new Set([...Object.keys(VA), ...Object.keys(TA), ...Object.keys(VB), ...Object.keys(TB)]).forEach(id => {
+        const ta = id in TA ? TA[id] : id in VA ? 0 : -1;
+        const tb = id in TB ? TB[id] : id in VB ? 0 : -1;
+        const [t, src] = ta >= tb ? [ta, VA] : [tb, VB];
+        if (!ok(id) || t < 0 || t < R) return;
+        if (id in src) out[key][id] = src[id];
+        if (id in TA || id in TB) out[tk][id] = t;
+      });
+    });
+    return out;
+  }
+  function canon(o) {   // 열쇠 순서와 상관없이 같은 내용이면 같은 글자
+    if (Array.isArray(o)) return `[${o.map(canon).join(',')}]`;
+    if (o && typeof o === 'object') return `{${Object.keys(o).sort().map(k => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`;
+    return JSON.stringify(o === undefined ? null : o);
+  }
+
+  // ── 기기 간 동기화: GitHub 비공개 저장소의 records.json 한 파일 ───────────
+  const syncToken = () => (store.get(K.sync, null) || {}).token || '';
+  let pushTimer = 0, syncing = null, syncAgain = false, lastSync = 0;
+  function setSyncInfo(ok, msg) {
+    store.set(K.syncInfo, { at: Date.now(), ok, msg: msg || '' });
+    const el = document.getElementById('syncState');
+    if (el) el.textContent = syncLabel();
+  }
+  function syncLabel() {
+    if (!syncToken()) return '';
+    const i = store.get(K.syncInfo, null);
+    if (!i) return '동기화 준비 중';
+    const at = new Date(i.at).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
+    return i.ok ? `기록 동기화됨 · ${at}` : `동기화 안 됨 · ${i.msg}`;
+  }
+  function schedulePush() {
+    if (!syncToken()) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => syncNow(), 2000);
+  }
+  async function gh(method, body, path) {
+    return fetch(`https://api.github.com/repos/${SYNC_REPO}${path === undefined ? `/contents/${SYNC_PATH}` : path}`, {
+      method, cache: 'no-store',
+      headers: Object.assign({ Authorization: `Bearer ${syncToken()}`, Accept: 'application/vnd.github+json' },
+        body ? { 'Content-Type': 'application/json' } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
+  function syncError(status) {
+    if (status === 401) return '토큰이 맞지 않거나 만료되었습니다';
+    if (status === 403) return '토큰에 이 저장소 쓰기 권한이 없습니다';
+    if (status === 404) return '토큰으로 기록 저장소에 들어갈 수 없습니다(저장소 선택 확인)';
+    return `GitHub 응답 ${status}`;
+  }
+  function syncNow() {
+    if (!syncToken() || !DATA) return Promise.resolve();
+    clearTimeout(pushTimer);
+    if (syncing) { syncAgain = true; return syncing; }
+    syncing = (async () => {
+      try {
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const g = await gh('GET');
+          let remote = null, sha;
+          if (g.status === 200) {
+            const d = await g.json();
+            sha = d.sha;
+            remote = JSON.parse(new TextDecoder().decode(b64(d.content.replace(/\s/g, ''))));
+          } else if (g.status !== 404) throw new Error(syncError(g.status));
+          const merged = remote ? mergeRec(REC, remote) : REC;
+          if (canon(merged) !== canon(REC)) {
+            REC = merged;
+            saveRecLocal();
+            remoteChanged();
+          }
+          if (remote && canon(merged) === canon(remote)) { setSyncInfo(true); return; }
+          const p = await gh('PUT', { message: `풀이 기록 ${new Date().toISOString()}`, sha,
+            content: toB64(new TextEncoder().encode(JSON.stringify(REC))) });
+          if (p.status === 200 || p.status === 201) { setSyncInfo(true); return; }
+          if (p.status !== 409 && p.status !== 422) throw new Error(syncError(p.status));
+          await new Promise(r => setTimeout(r, 700 * (attempt + 1)));   // 다른 기기가 막 저장했으면 잠깐 뒤 다시 받아 합친다
+        }
+        throw new Error('다른 기기와 동시에 저장하느라 실패했습니다. 잠시 뒤 다시 시도합니다');
+      } catch (e) {
+        setSyncInfo(false, e instanceof TypeError ? '인터넷 연결을 확인하세요' : e.message);
+      } finally {
+        lastSync = Date.now();
+        syncing = null;
+        if (syncAgain) { syncAgain = false; schedulePush(); }
+      }
+    })();
+    return syncing;
+  }
+  // 다른 기기 기록이 들어오면 지금 화면을 다시 그린다 (글 쓰는 중이거나 문제 화면이면 그대로 둠)
+  function remoteChanged() {
+    const a = document.activeElement;
+    if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) return;
+    if (/^#\/(q|settings)/.test(location.hash)) return;
+    const y = window.scrollY;
+    route();
+    window.scrollTo(0, y);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!syncToken() || !DATA) return;
+    if (document.visibilityState === 'hidden' && pushTimer) syncNow();
+    if (document.visibilityState === 'visible' && Date.now() - lastSync > 10000) syncNow();
+  });
+  window.addEventListener('online', () => { if (syncToken() && DATA) syncNow(); });
 
   // ── 세션: 지금 풀고 있는 문제 묶음과 순서 ─────────────────────
   function getSession(id) {
@@ -189,7 +325,7 @@
         </section>
         <footer class="foot">
           <a href="#/settings">${icon('settings')}설정 · 기록 옮기기</a>
-          <p>풀이 기록은 이 기기의 브라우저에만 저장됩니다.</p>
+          <p id="syncState">${syncToken() ? esc(syncLabel()) : '풀이 기록은 이 기기에만 저장됩니다. 설정에서 기기 간 동기화를 켤 수 있습니다.'}</p>
         </footer>
       </main>`;
   }
@@ -274,8 +410,7 @@
       </div></nav>`;
     on('[data-star]', e => {
       const btn = e.currentTarget;
-      if (REC.star[id]) delete REC.star[id]; else REC.star[id] = 1;
-      saveRec();
+      setMark('star', id, REC.star[id] ? undefined : 1);
       const isOn = !!REC.star[id];
       btn.classList.toggle('on', isOn);
       btn.setAttribute('aria-pressed', String(isOn));
@@ -402,12 +537,11 @@
       <textarea id="draft" placeholder="떠오르는 대로 적어 본 뒤 모범 답안과 비교해 보세요.">${esc(REC.draft[id] || '')}</textarea>
       <div id="after"></div>`;
     $('#draft').addEventListener('input', e => {
-      if (e.target.value.trim()) REC.draft[id] = e.target.value; else delete REC.draft[id];
-      saveRec();
+      setMark('draft', id, e.target.value.trim() ? e.target.value : undefined);
     });
     if (r) { showModel(id, r); return; }
     $('#after').innerHTML = `<button class="btn primary block" data-reveal>${icon('eye')}모범 답안 보기</button>`;
-    on('[data-reveal]', () => { delete REC.check[id]; saveRec(); showModel(id, null); });
+    on('[data-reveal]', () => { setMark('check', id, undefined); showModel(id, null); });
   }
   function showModel(id, r) {
     const q = P(id), checks = REC.check[id] || [];
@@ -428,10 +562,9 @@
       </div>
       ${r ? retryBtn() : ''}`;
     $$('[data-c]').forEach(cb => cb.addEventListener('change', () => {
-      const arr = REC.check[id] || [];
+      const arr = (REC.check[id] || []).slice();
       arr[+cb.dataset.c] = cb.checked;
-      REC.check[id] = arr;
-      saveRec();
+      setMark('check', id, arr);
     }));
     $$('[data-self]').forEach(b => b.addEventListener('click', () => {
       setResult(id, b.dataset.self, {});
@@ -538,8 +671,24 @@
           <div class="chips">${[['auto', '기기 설정 따름'], ['light', '밝게'], ['dark', '어둡게']].map(([v, l]) => `<button class="chip" data-theme="${v}" aria-pressed="${theme === v}">${l}</button>`).join('')}</div>
         </section>
         <section class="card">
-          <h2 class="sec">기록 옮기기</h2>
-          <p class="muted">휴대폰과 노트북의 기록은 따로 저장됩니다. 한쪽에서 기록 코드를 복사해 다른 쪽에 붙여 넣으면 두 기록이 합쳐집니다.</p>
+          <h2 class="sec">기기 간 기록 동기화</h2>
+          ${syncToken() ? `
+            <p class="muted" id="syncState">${esc(syncLabel())}</p>
+            <p class="muted">풀이 기록이 GitHub 비공개 저장소 ${SYNC_REPO}에 저장되어, 연결한 기기끼리 자동으로 맞춰집니다.</p>
+            <div class="row"><button class="btn" data-syncnow>${icon('refresh')}지금 동기화</button>
+              <button class="btn" data-synclink>${icon('copy')}다른 기기 연결 링크 복사</button></div>
+            <div class="row" style="margin-top:10px"><button class="btn ghost" data-syncoff>${icon('x')}이 기기 연결 끊기</button></div>`
+          : `
+            <p class="muted">연결하면 휴대폰·노트북 어디서 풀어도 같은 기록이 보입니다. 기록은 GitHub 비공개 저장소 ${SYNC_REPO}에 저장됩니다.</p>
+            <p class="muted">GitHub에서 그 저장소 하나에만 'Contents: 읽기·쓰기' 권한을 준 토큰을 만들어 아래에 붙여 넣으세요.
+              <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style="color:var(--primary);font-weight:600">토큰 만들기</a></p>
+            <textarea id="tok" placeholder="github_pat_로 시작하는 토큰 붙여 넣기" spellcheck="false" autocomplete="off" style="min-height:70px"></textarea>
+            <div class="row"><button class="btn primary" data-syncon>${icon('check')}연결</button></div>`}
+          <p class="muted small" id="syncMsg" role="status" style="margin:8px 0 0"></p>
+        </section>
+        <section class="card">
+          <h2 class="sec">기록 옮기기 (손으로)</h2>
+          <p class="muted">동기화를 쓰지 않을 때, 한쪽에서 기록 코드를 복사해 다른 쪽에 붙여 넣으면 두 기록이 합쳐집니다.</p>
           <div class="row"><button class="btn" data-export>${icon('copy')}기록 코드 복사</button></div>
           <textarea id="io" placeholder="다른 기기에서 복사한 기록 코드를 여기에 붙여 넣기" spellcheck="false" autocomplete="off"></textarea>
           <div class="row"><button class="btn" data-import>${icon('download')}붙여 넣은 기록 합치기</button></div>
@@ -547,7 +696,7 @@
         </section>
         <section class="card">
           <h2 class="sec">기록 지우기</h2>
-          <p class="muted">맞음·틀림, 별표, 서술형 답안을 모두 지웁니다.</p>
+          <p class="muted">맞음·틀림, 별표, 서술형 답안을 모두 지웁니다. 동기화 중이면 연결된 다른 기기의 기록도 지워집니다.</p>
           <button class="btn danger" data-reset>${icon('trash')}모든 기록 지우기</button>
         </section>
         <section class="card">
@@ -587,9 +736,37 @@
         msg('기록 코드를 읽지 못했습니다. 처음부터 끝까지 그대로 붙여 넣었는지 확인하세요.');
       }
     });
+    const smsg = t => { $('#syncMsg').textContent = t; };
+    on('[data-syncon]', async () => {
+      const tok = $('#tok').value.trim();
+      if (!tok) return;
+      store.set(K.sync, { token: tok });
+      smsg('연결하는 중…');
+      const r = await gh('GET', null, '').catch(() => null);
+      if (!r || r.status !== 200) {
+        store.del(K.sync);
+        smsg(r ? syncError(r.status) : '인터넷 연결을 확인하세요');
+        return;
+      }
+      await syncNow();
+      renderSettings();
+    });
+    on('[data-syncnow]', async () => { smsg('동기화하는 중…'); await syncNow(); smsg(''); });
+    on('[data-synclink]', async () => {
+      const key = RAWKEY ? toB64(RAWKEY).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : '';
+      const url = `${location.origin}${location.pathname}#k=${key}&t=${encodeURIComponent(syncToken())}`;
+      try { await navigator.clipboard.writeText(url); smsg('링크를 복사했습니다. 다른 기기에서 열면 비밀번호 없이 열리고 동기화도 연결됩니다. 이 링크는 남에게 주지 마세요.'); }
+      catch (e) { smsg(url); }
+    });
+    on('[data-syncoff]', () => {
+      if (!window.confirm('이 기기의 동기화를 끊을까요? 이 기기의 기록은 그대로 남습니다.')) return;
+      store.del(K.sync);
+      store.del(K.syncInfo);
+      renderSettings();
+    });
     on('[data-reset]', () => {
       if (!window.confirm('모든 풀이 기록과 별표, 서술형 답안을 지울까요? 되돌릴 수 없습니다.')) return;
-      REC = { res: {}, star: {}, draft: {}, check: {} };
+      REC = Object.assign(emptyRec(), { resetAt: Date.now() });
       saveRec();
       store.del(K.last);
       store.del(K.session);
@@ -604,19 +781,9 @@
     });
   }
   function merge(o) {
-    let n = 0;
-    Object.entries(o.res || {}).forEach(([id, r]) => {
-      if (!DATA.problems[id] || !r || typeof r !== 'object') return;
-      const mine = REC.res[id];
-      if (r.r && (!mine || !mine.r || (r.t || 0) > (mine.t || 0))) {
-        REC.res[id] = Object.assign({}, r, { ever: !!(r.ever || (mine && mine.ever)) });
-        n++;
-      } else if (mine && r.ever) mine.ever = true;
-      else if (!mine) REC.res[id] = r;
-    });
-    Object.keys(o.star || {}).forEach(id => { if (DATA.problems[id]) REC.star[id] = 1; });
-    Object.entries(o.draft || {}).forEach(([id, t]) => { if (DATA.problems[id] && typeof t === 'string' && !REC.draft[id]) REC.draft[id] = t; });
-    Object.entries(o.check || {}).forEach(([id, c]) => { if (DATA.problems[id] && Array.isArray(c) && !REC.check[id]) REC.check[id] = c; });
+    const merged = mergeRec(REC, o && typeof o === 'object' ? o : {});
+    const n = Object.keys(merged.res).filter(id => merged.res[id].r && canon(merged.res[id]) !== canon(REC.res[id])).length;
+    REC = merged;
     saveRec();
     return n;
   }
@@ -655,6 +822,7 @@
       try {
         const raw = await deriveRaw(pw.value);
         DATA = await openData(raw);
+        RAWKEY = raw;
         if ($('#remember').checked) store.set(K.key, toB64(raw));
         ready();
       } catch (x) {
@@ -671,6 +839,7 @@
     DATA.chapters.forEach(c => { CH[c.no] = c; ORDER.push(...c.ids); });
     loadRec();
     route();
+    syncNow();
   }
 
   // 노트북: 1~4로 보기 고르기, ←·→로 이전·다음
@@ -696,17 +865,20 @@
     if (!(window.crypto && crypto.subtle)) { renderLock('이 브라우저에서는 열 수 없습니다. https 주소로 열어 주세요.'); return; }
     // 열쇠가 들어 있는 링크(#k=…)로 열면 비밀번호 없이 열고 이 기기에 기억한다
     const link = location.hash.match(/^#k=([A-Za-z0-9_-]+)/);
+    const tok = location.hash.match(/[#&]t=([A-Za-z0-9_%-]+)/);
+    if (tok) store.set(K.sync, { token: decodeURIComponent(tok[1]) });
     if (link) {
       history.replaceState(null, '', location.pathname + location.search + '#/');
       try {
         const raw = b64(link[1].replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - link[1].length % 4) % 4));
         DATA = await openData(raw);
+        RAWKEY = raw;
         store.set(K.key, toB64(raw));
       } catch (e) { /* 열쇠가 맞지 않는 링크면 아래 잠금 화면으로 */ }
     }
     const saved = !DATA && store.get(K.key, null);
     if (saved) {
-      try { DATA = await openData(b64(saved)); } catch (e) { store.del(K.key); }
+      try { DATA = await openData(b64(saved)); RAWKEY = b64(saved); } catch (e) { store.del(K.key); }
     }
     if (DATA) ready(); else renderLock();
   }
