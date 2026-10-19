@@ -95,6 +95,19 @@ def run(p, browser_name, device, base):
     no_hscroll(page, "객관식 풀이 뒤")
     shot("3-mc-no")
 
+    # 다음 버튼은 문제 길이·풀이 여부와 상관없이 같은 자리(화면 맨 아래)
+    spots = []
+    for pid in ("1-21", "6-29"):
+        page.goto(base + f"#/q/{pid}")
+        page.wait_for_selector("[data-next]")
+        spots.append(page.evaluate("Math.round(document.querySelector('[data-next]').getBoundingClientRect().bottom - innerHeight)"))
+    page.goto(base + "#/q/1-20")
+    page.wait_for_selector(".choice")
+    page.click(".choice[data-k='4']")
+    spots.append(page.evaluate("Math.round(document.querySelector('[data-next]').getBoundingClientRect().bottom - innerHeight)"))
+    page.click("[data-retry]")   # 뒤 점검의 기록 숫자가 바뀌지 않게 되돌림
+    check(len(set(spots)) == 1 and -40 < spots[0] <= 0, f"다음 버튼 위치가 들쭉날쭉 {spots}")
+
     # 새로고침해도 열쇠·기록 유지
     page.goto(base + "#/")
     page.reload()
